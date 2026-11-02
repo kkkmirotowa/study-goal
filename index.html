@@ -244,7 +244,7 @@ svg{display:block;flex:none}
 .danger-zone{border-color:#f6d5d5}
 .danger-zone .ic{background:var(--danger-soft);color:var(--danger)}
 .inline-form{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-.inline-form input{flex:1;min-width:130px;height:38px;border:1px solid var(--line2);border-radius:10px;padding:0 11px;background:#fff}
+.inline-form input{flex:1;min-width:130px;height:38px;border:1px solid var(--line2);border-radius:10px;padding:0 11px;background:#fff;font-size:16px}
 
 /* ---------- 弹层 ---------- */
 .mask{position:fixed;inset:0;background:rgba(20,22,38,.42);backdrop-filter:blur(3px);z-index:90;display:flex;align-items:flex-end;justify-content:center;animation:fade .18s ease}
@@ -1048,6 +1048,287 @@ function rowToScript(row){
   };
 }
 
+/* =========================================================================
+   3. GitHub Gist 多设备同步通道
+   - 令牌只存在浏览器 localStorage：不写入页面源码、不上传任何第三方
+   - 远端用 secret gist（不公开列出，只有拿到链接的人才能访问）
+   - 冲突策略：逐条按 updatedAt 取新（LWW）+ 墓碑记录删除；写入用 ETag 乐观锁
+   ========================================================================= */
+var GIST_DESC = "learning-goal-sync-v1";
+var GIST_FILE = "data.json";
+var TOMB_TTL  = 90 * 86400000;      /* 墓碑保留 90 天 */
+var SYNC_LS   = LS_KEY + "_sync";
+
+/* 每条记录的唯一键：周复盘按周起始，其余按 id */
+function keyOfRec(t, r){
+  if(!r) return "";
+  return t === "reviews" ? String(r.weekStart || "") : String(r.id || "");
+}
+function emptyEnv(){
+  var d = {};
+  TABLES.forEach(function(t){ d[t] = []; });
+  return { v:1, updatedAt:0, data:d, tombs:{} };
+}
+/* 把任意来源的数据洗成标准信封：丢脏记录、按主键去重 */
+function normalizeEnv(e){
+  var out = emptyEnv();
+  if(!e || typeof e !== "object") return out;
+  var d = e.data || {};
+  TABLES.forEach(function(t){
+    var arr = Array.isArray(d[t]) ? d[t] : [];
+    var seen = {};
+    out.data[t] = arr.filter(function(r){
+      var k = keyOfRec(t, r);
+      if(!k || seen[k]) return false;
+      seen[k] = 1; return true;
+    });
+  });
+  var tb = e.tombs || {};
+  Object.keys(tb).forEach(function(k){
+    var ts = Number(tb[k]);
+    if(ts > 0) out.tombs[k] = ts;
+  });
+  out.updatedAt = Number(e.updatedAt) || 0;
+  return out;
+}
+/* 合并两端信封（纯函数，可单测）。时间戳相同时以远端为准，保证两端结果一致 */
+function mergeEnv(a, b){
+  var A = normalizeEnv(a), B = normalizeEnv(b);
+  var out = emptyEnv();
+  var st = { fromRemote:0, fromLocal:0, deleted:0 };
+  TABLES.forEach(function(t){
+    var map = {}, winner = {};
+    function put(rec, src){
+      var k = keyOfRec(t, rec);
+      if(!k) return;
+      var cur = map[k];
+      if(!cur || (Number(rec.updatedAt)||0) >= (Number(cur.updatedAt)||0)){
+        map[k] = rec; winner[k] = src;
+      }
+    }
+    (A.data[t]||[]).forEach(function(r){ put(r, "local"); });
+    (B.data[t]||[]).forEach(function(r){ put(r, "remote"); });
+
+    /* 墓碑：两端取更晚的删除时间 */
+    var tomb = {};
+    [A.tombs, B.tombs].forEach(function(tb){
+      Object.keys(tb).forEach(function(k){
+        if(k.indexOf(t+"/") !== 0) return;
+        var id = k.slice(t.length+1), ts = Number(tb[k])||0;
+        if(!tomb[id] || ts > tomb[id]) tomb[id] = ts;
+      });
+    });
+    var list = [];
+    Object.keys(map).forEach(function(k){
+      if((tomb[k]||0) >= (Number(map[k].updatedAt)||0)){ st.deleted++; return; }
+      list.push(map[k]);
+      if(winner[k] === "remote") st.fromRemote++; else st.fromLocal++;
+    });
+    out.data[t] = list;
+    Object.keys(tomb).forEach(function(k){
+      if(Date.now() - tomb[k] > TOMB_TTL) return;
+      out.tombs[t+"/"+k] = tomb[k];
+    });
+  });
+  out.updatedAt = Date.now();
+  return { env: out, stats: st };
+}
+
+var Sync = {
+  API_BASE: "https://api.github.com",   /* 仅测试时可覆盖 */
+  token: "", gistId: "", etag: "",
+  status: "off",          /* off | ok | syncing | err */
+  lastSyncAt: 0, err: "", stats: null,
+  getLocal: null,         /* 由 UI 层注入：返回本地信封 */
+  applyMerged: null,      /* 由 UI 层注入：把合并结果写回界面 */
+  onchange: null,
+
+  emit: function(){ if(this.onchange){ try{ this.onchange(); }catch(e){} } },
+  on:   function(){ return !!(this.token && this.gistId); },
+
+  load: function(){
+    try{
+      var d = JSON.parse(localStorage.getItem(SYNC_LS) || "{}");
+      this.token = String(d.token || "");
+      this.gistId = String(d.gistId || "");
+      this.lastSyncAt = Number(d.lastSyncAt) || 0;
+      if(this.token && this.gistId) this.status = "ok";
+    }catch(e){}
+  },
+  persist: function(){
+    try{
+      localStorage.setItem(SYNC_LS, JSON.stringify({
+        token:this.token, gistId:this.gistId, lastSyncAt:this.lastSyncAt
+      }));
+    }catch(e){}
+  },
+  disconnect: function(){
+    this.token=""; this.gistId=""; this.etag=""; this.status="off";
+    this.err=""; this.stats=null; this.lastSyncAt=0;
+    try{ localStorage.removeItem(SYNC_LS); }catch(e){}
+    this.emit();
+  },
+
+  hdr: function(extra){
+    var h = {
+      "Authorization": "Bearer " + this.token,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    };
+    if(extra) Object.keys(extra).forEach(function(k){ h[k] = extra[k]; });
+    return h;
+  },
+
+  req: function(path, opt){
+    var self = this;
+    opt = opt || {};
+    var init = { method: opt.method || "GET", headers: this.hdr(opt.headers) };
+    if(opt.body) init.body = opt.body;
+    return fetch(this.API_BASE + path, init).then(function(res){
+      var et = res.headers.get("ETag");
+      return res.text().then(function(txt){
+        var data = null;
+        try{ data = txt ? JSON.parse(txt) : null; }catch(e){ data = null; }
+        if(!res.ok){
+          var msg = (data && data.message) || ("HTTP " + res.status);
+          var err = new Error(msg);
+          err.status = res.status;
+          throw err;
+        }
+        return { body: data, etag: et || "" };
+      });
+    }).catch(function(e){
+      if(e && e.name === "TypeError") throw new Error("网络请求失败，请检查网络连接");
+      throw e;
+    });
+  },
+
+  /* 找到同步用的 gist；没有则创建 */
+  findGist: function(){
+    var self = this;
+    function page(n){
+      if(n > 5) return Promise.resolve("");
+      return self.req("/gists?per_page=100&page=" + n).then(function(r){
+        var list = r.body || [];
+        for(var i = 0; i < list.length; i++){
+          if(list[i] && list[i].description === GIST_DESC) return list[i].id;
+        }
+        if(list.length === 100) return page(n + 1);
+        return "";
+      });
+    }
+    return page(1);
+  },
+
+  connect: function(token){
+    var self = this;
+    token = String(token || "").trim();
+    if(!token) return Promise.reject(new Error("请先填入令牌"));
+    if(!/^(ghp_|github_pat_)/.test(token)){
+      return Promise.reject(new Error("令牌格式不对，应以 ghp_ 或 github_pat_ 开头"));
+    }
+    var prevToken = this.token, prevGist = this.gistId, prevStatus = this.status;
+    this.token = token;
+    this.status = "syncing"; this.err = ""; this.emit();
+    return this.findGist().then(function(id){
+      if(id){ self.gistId = id; return null; }
+      var files = {}; files[GIST_FILE] = { content: "{}" };
+      return self.req("/gists", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: GIST_DESC, public: false, files: files })
+      }).then(function(r){ self.gistId = (r.body && r.body.id) || ""; });
+    }).then(function(){
+      if(!self.gistId) throw new Error("未能创建云端同步空间");
+      self.persist();
+      self.status = "ok"; self.lastSyncAt = Date.now();
+      self.emit();
+      return true;
+    }).catch(function(e){
+      /* 连接失败：回滚到连接前的状态，绝不留下半截配置 */
+      self.token = prevToken; self.gistId = prevGist; self.status = prevStatus;
+      self.err = (e && e.message) || "连接失败";
+      self.emit();
+      throw e;
+    });
+  },
+
+  pull: function(){
+    var self = this;
+    return this.req("/gists/" + this.gistId).then(function(r){
+      self.etag = r.etag || self.etag;
+      var f = (r.body && r.body.files && r.body.files[GIST_FILE]) || null;
+      if(!f) return emptyEnv();
+      if(f.truncated) throw new Error("云端数据过大已被截断，请精简历史记录后重试");
+      var d = null;
+      try{ d = JSON.parse(f.content || "{}"); }catch(e){ d = null; }
+      return normalizeEnv(d);
+    });
+  },
+
+  push: function(env){
+    var self = this;
+    var files = {}; files[GIST_FILE] = { content: JSON.stringify(env) };
+    var headers = { "Content-Type": "application/json" };
+    if(this.etag) headers["If-Match"] = this.etag;
+    return this.req("/gists/" + this.gistId, {
+      method: "PATCH", headers: headers, body: JSON.stringify({ description: GIST_DESC, files: files })
+    }).then(function(r){
+      self.etag = r.etag || self.etag;
+      return true;
+    }).catch(function(e){
+      if(e && e.status === 412) return "conflict";
+      throw e;
+    });
+  },
+
+  /* 一次完整同步：拉 → 合并 → 写回界面 → 推 */
+  sync: function(){
+    var self = this;
+    if(!this.on() || this.status === "syncing") return Promise.resolve(null);
+    this.status = "syncing"; this.emit();
+    var localEnv = this.getLocal ? this.getLocal() : emptyEnv();
+    var stats = { fromRemote:0, fromLocal:0, deleted:0 };
+    return this.pull().then(function(remote){
+      var m = mergeEnv(localEnv, remote);
+      stats = m.stats;
+      if(self.applyMerged) self.applyMerged(m.env, m.stats);
+      /* 与云端完全一致就跳过写入，省一次请求 */
+      if(JSON.stringify(m.env) === JSON.stringify(normalizeEnv(remote))){
+        self.status = "ok"; self.lastSyncAt = Date.now(); self.err = ""; self.stats = stats;
+        self.persist(); self.emit();
+        return { changed:false, stats:stats };
+      }
+      return self.push(m.env).then(function(r){
+        if(r !== "conflict") return true;
+        /* 另一台设备先写了：再拉一次、再合并、再推（只重试一次） */
+        return self.pull().then(function(r2){
+          var m2 = mergeEnv(self.getLocal ? self.getLocal() : emptyEnv(), r2);
+          stats = m2.stats;
+          if(self.applyMerged) self.applyMerged(m2.env, m2.stats);
+          return self.push(m2.env);
+        });
+      }).then(function(){
+        return true;
+      });
+    }).then(function(r){
+      self.status = "ok"; self.lastSyncAt = Date.now();
+      self.err = ""; self.stats = stats;
+      self.persist(); self.emit();
+      return { changed: r ? r.changed !== false : false, stats: stats };
+    }).catch(function(e){
+      var st = e && e.status;
+      self.status = "err";
+      self.err = st === 401 ? "令牌已失效或被撤销，请重新生成并连接"
+               : st === 403 ? "请求被拒绝（可能触发频率限制），请稍后重试"
+               : st === 404 ? "云端同步空间已不存在，请重新连接"
+               : ((e && e.message) || "同步失败");
+      self.emit();
+      throw e;
+    });
+  }
+};
+
 /* 暴露给 UI 层 */
 global.LG = {
   pad:pad, fmtDate:fmtDate, parseDate:parseDate, todayStr:todayStr, addDays:addDays,
@@ -1055,7 +1336,9 @@ global.LG = {
   mondayOf:mondayOf, weekEndOf:weekEndOf, weekLabel:weekLabel, icon:icon,
   DB:DB, SCHEMA:SCHEMA, TABLES:TABLES, LS_KEY:LS_KEY,
   rowToGoal:rowToGoal, rowToCheckin:rowToCheckin, rowToReview:rowToReview,
-  rowToEvent:rowToEvent, rowToScript:rowToScript
+  rowToEvent:rowToEvent, rowToScript:rowToScript,
+  Sync:Sync, mergeEnv:mergeEnv, normalizeEnv:normalizeEnv, emptyEnv:emptyEnv,
+  GIST_DESC:GIST_DESC
 };
 
 })(window);
@@ -1080,7 +1363,7 @@ var COLORS = ["#7c5cff","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#14b8
 var LS = T.LS_KEY;
 
 /* ------------------------------ 状态 ------------------------------ */
-var state = { goals:[], checkins:[], reviews:[], events:[], scripts:[] };
+var state = { goals:[], checkins:[], reviews:[], events:[], scripts:[], tombs:{} };
 var ui = { tab:"today", weekOffset:0, boardChart:true, calMonth:"", calDay:"",
   scriptId:null, scriptDirty:false };   /* scriptId: null=文案总览，字符串=编辑某篇 */
 
@@ -1088,8 +1371,9 @@ var ui = { tab:"today", weekOffset:0, boardChart:true, calMonth:"", calDay:"",
 function saveLocal(){
   try{ localStorage.setItem(LS, JSON.stringify({
     goals:state.goals, checkins:state.checkins, reviews:state.reviews,
-    events:state.events, scripts:state.scripts
+    events:state.events, scripts:state.scripts, tombs:state.tombs||{}
   })); }catch(e){}
+  if(!applyingRemote) syncTouch();   /* 任何一次落盘都安排一次云端同步 */
 }
 function loadLocal(){
   try{
@@ -1100,8 +1384,100 @@ function loadLocal(){
     /* 向后兼容：老数据缺字段时补空数组 */
     if(!Array.isArray(d.events)) d.events = [];
     if(!Array.isArray(d.scripts)) d.scripts = [];
+    if(!d.tombs || typeof d.tombs !== "object") d.tombs = {};
     return d;
   }catch(e){ return null; }
+}
+
+/* ========================== 多设备同步（GitHub Gist） ==========================
+   渲染函数不直接触发同步；同步完成后统一由 applyMergedEnv → refreshAll 收口。
+   ========================================================================== */
+var Sync = T.Sync;
+var syncTimer = null;
+var applyingRemote = false;   /* 正在写入云端合并结果时，不再触发新一轮同步 */
+
+/* 删除墓碑：记下「这条被删了」。否则另一台设备会把已删的记录重新推回来 */
+function markTomb(t, id){
+  if(!state.tombs) state.tombs = {};
+  state.tombs[t + "/" + id] = Date.now();
+}
+function envFromState(){
+  var e = T.emptyEnv();
+  T.TABLES.forEach(function(t){
+    e.data[t] = (state[t] || []).map(function(r){
+      var c = Object.assign({}, r);
+      if(!c.updatedAt) c.updatedAt = c.createdAt || Date.now();
+      return c;
+    });
+  });
+  e.tombs = Object.assign({}, state.tombs || {});
+  e.updatedAt = Date.now();
+  return e;
+}
+function hasFocusInForms(){
+  var a = document.activeElement;
+  if(!a) return false;
+  var tag = (a.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select";
+}
+/* 把合并结果写回界面。正在输入时不重渲染，免得光标和半句话被冲掉 */
+function applyMergedEnv(env, stats){
+  applyingRemote = true;
+  T.TABLES.forEach(function(t){ state[t] = (env && env.data && env.data[t]) || []; });
+  state.tombs = Object.assign({}, (env && env.tombs) || {});
+  try{ saveLocal(); }catch(e){}
+  applyingRemote = false;
+
+  if(ui.scriptId) flushScriptDraft();
+  if(ui.scriptId || hasFocusInForms()){ renderSyncBar(); return; }
+
+  refreshAll();
+  if(stats && (stats.fromRemote || stats.deleted)){
+    toast("已同步 · 更新 " + stats.fromRemote + " 条" +
+          (stats.deleted ? "，清理 " + stats.deleted + " 条" : ""), "ok");
+  }
+}
+/* 防抖推送：连着打好几次卡也只推一次 */
+function syncTouch(){
+  if(!Sync.on()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(function(){ Sync.sync().catch(function(){}); }, 2500);
+}
+function syncNow(manual){
+  if(!Sync.on()){ toast("还没开启多设备同步"); return; }
+  Sync.sync().then(function(r){
+    if(manual) toast(r && r.changed ? "已同步到云端" : "已经是最新了", "ok");
+  }).catch(function(e){
+    toast((e && e.message) || "同步失败");
+  });
+}
+function syncConnect(token){
+  Sync.connect(token).then(function(){
+    toast("同步已开启", "ok");
+    return Sync.sync();
+  }).catch(function(e){
+    toast((e && e.message) || "连接失败");
+  });
+}
+function syncDisconnect(){
+  openModal(
+    '<h3>断开多设备同步</h3>'+
+    '<p style="margin:0 0 6px;font-size:14px">断开后，这台设备不再与云端同步。</p>'+
+    '<p class="muted mini" style="margin:0">本机数据会完整保留，云端数据也保留。以后用同一个令牌重新连接即可继续同步。</p>'+
+    '<div class="m-acts"><button class="btn btn-ghost" data-act="modal-close">取消</button>'+
+    '<button class="btn btn-danger" data-act="sync-off-yes">确认断开</button></div>'
+  );
+}
+function syncTimeText2(){
+  if(!Sync.lastSyncAt) return "尚未同步";
+  var d = new Date(Sync.lastSyncAt);
+  return "最近同步 " + T.fmtDate(d) + " " + T.pad(d.getHours()) + ":" + T.pad(d.getMinutes());
+}
+function syncPill(){
+  if(Sync.status === "syncing") return ['sp-sync', '同步中'];
+  if(Sync.status === "err")     return ['sp-err', '异常'];
+  if(Sync.status === "ok")      return ['sp-on', '已同步'];
+  return ['sp-off', '未连接'];
 }
 
 /* ------------------------------ 示例数据 ------------------------------ */
@@ -1449,6 +1825,7 @@ function delCheckin(id){
   if(i < 0) return;
   var rec = state.checkins[i];
   state.checkins.splice(i,1);
+  markTomb("checkins", id);
   pushCloud("checkins","delete",rec);
   afterCloud();
   toast("已删除该条记录");
@@ -1471,9 +1848,10 @@ function delGoal(id){
   var i = state.goals.findIndex(function(x){ return x.id === id; });
   if(i < 0) return;
   var g = state.goals[i];
-  logsOf(id).forEach(function(c){ pushCloud("checkins","delete",c); });
+  logsOf(id).forEach(function(c){ pushCloud("checkins","delete",c); markTomb("checkins", c.id); });
   state.checkins = state.checkins.filter(function(c){ return c.goalId !== id; });
   state.goals.splice(i,1);
+  markTomb("goals", id);
   pushCloud("goals","delete",g);
   afterCloud();
   closeModal();
@@ -1634,7 +2012,17 @@ function renderNav(){
 function renderSyncBar(){
   var el = document.getElementById("syncbar");
   var box, txt, act = "";
-  if(DB.mode === "boot"){ box="sync"; txt="正在连接资料库…"; }
+  if(Sync.on()){
+    /* 多设备同步优先：资料库在本环境中通常不可用 */
+    if(Sync.status === "syncing"){ box="sync"; txt="正在同步到云端…"; }
+    else if(Sync.status === "err"){
+      box="err"; txt="同步异常："+esc(Sync.err)+"　数据已保存在本地，可重试";
+      act='<button class="btn btn-xs" data-act="sync-now">重试</button>';
+    }
+    else { box="on"; txt="多设备同步已开启 · "+syncTimeText2();
+      act='<button class="btn btn-xs" data-act="sync-now">立即同步</button>'; }
+  }
+  else if(DB.mode === "boot"){ box="sync"; txt="正在连接资料库…"; }
   else if(DB.mode === "cloud"){
     if(DB.syncing){ box="sync"; txt="正在同步资料库…"; }
     else if(DB.err){ box="err"; txt="同步异常："+esc(DB.err)+"　数据已保存在本地，可重试"; act='<button class="btn btn-xs" data-act="resync">重试</button>'; }
@@ -1648,12 +2036,16 @@ function renderSyncBar(){
     '<span>'+txt+'</span><span class="sp">'+act+'</span></div>';
 
   var pill;
-  if(DB.mode==="cloud") pill = DB.err ? '<span class="status-pill sp-err">异常</span>'
+  if(Sync.on()){
+    var ps = syncPill();
+    pill = '<span class="status-pill '+ps[0]+'">'+ps[1]+'</span>';
+  }
+  else if(DB.mode==="cloud") pill = DB.err ? '<span class="status-pill sp-err">异常</span>'
     : (DB.syncing ? '<span class="status-pill sp-sync">同步中</span>' : '<span class="status-pill sp-on">已同步</span>');
   else if(DB.mode==="boot") pill = '<span class="status-pill sp-sync">连接中</span>';
   else pill = '<span class="status-pill sp-off">本地</span>';
   var sb = document.getElementById("sbSync");
-  if(sb) sb.innerHTML = pill+"<br>"+syncTimeText();
+  if(sb) sb.innerHTML = pill+"<br>"+(Sync.on() ? syncTimeText2() : syncTimeText());
   var tbs = document.getElementById("tbSync");
   if(tbs) tbs.innerHTML = pill;
 }
@@ -2085,6 +2477,7 @@ function delEvent(id){
   if(i < 0) return;
   var e = state.events[i];
   state.events.splice(i,1);
+  markTomb("events", id);
   pushCloud("events","delete",e);
   afterCloud();
   closeModal();
@@ -2247,6 +2640,7 @@ function delScript(id){
   var s = findScript(id);
   if(!s) return;
   pushCloud("scripts","delete",s);
+  markTomb("scripts", id);
   state.scripts = state.scripts.filter(function(x){ return x.id !== id; });
   if(ui.scriptId === id){ ui.scriptId = null; ui.scriptDirty = false; }
   clearTimeout(scriptSaveTimer);
@@ -2404,6 +2798,46 @@ function renderMe(){
     '<button class="btn btn-sm btn-brand" data-act="resync">'+icon("refresh",15)+'重新同步</button>'+
     '</div></div>';
 
+  /* ---- 多设备同步（GitHub Gist） ---- */
+  if(Sync.on()){
+    var sp1 = syncPill();
+    h += '<div class="card"><div class="row">'+
+      '<span class="ic">'+icon("cloud",18)+'</span>'+
+      '<div class="tx"><b>多设备同步</b><span>'+syncTimeText2()+'</span></div>'+
+      '<span class="status-pill '+sp1[0]+'">'+sp1[1]+'</span></div>'+
+      '<div style="padding:0 14px 14px">'+
+      (Sync.err ? '<div class="alert alert-red-box" style="margin-top:0">'+icon("alert",16)+
+        '<div><b>'+esc(Sync.err)+'</b>'+
+        '<div class="a-acts"><button class="btn btn-xs" data-act="sync-now">重试</button></div>'+
+        '</div></div>' : '')+
+      '<p class="mini muted" style="margin:0 0 10px">'+
+        '手机和电脑的数据会自动保持一致：每次改动约 3 秒后上传，打开页面时自动拉取。'+
+        '同一条记录以最后修改的为准，删掉的不会被别的设备推回来。</p>'+
+      '<div class="inline-form">'+
+        '<button class="btn btn-sm btn-brand" data-act="sync-now">'+icon("refresh",15)+'立即同步</button>'+
+        '<button class="btn btn-sm" data-act="sync-off">断开同步</button>'+
+      '</div>'+
+      '<p class="mini muted" style="margin:10px 0 0">在新设备上打开同一个页面，'+
+        '粘贴<b>同一个令牌</b>即可接入。</p>'+
+      '</div></div>';
+  }else{
+    h += '<div class="card"><div class="row">'+
+      '<span class="ic">'+icon("cloudOff",18)+'</span>'+
+      '<div class="tx"><b>多设备同步</b><span>让手机和电脑数据一致</span></div>'+
+      '<span class="status-pill sp-off">未连接</span></div>'+
+      '<div style="padding:0 14px 14px">'+
+      '<p class="mini muted" style="margin:0 0 10px">'+
+        '用一个<b>只勾 gist 权限</b>的 GitHub 令牌开启。令牌只保存在这台设备的浏览器里，'+
+        '不会写进网页、也不会发给我——换设备时你自己粘贴一次就行。</p>'+
+      '<div class="inline-form">'+
+        '<input id="syncToken" type="password" placeholder="ghp_ 开头的令牌" autocomplete="off" spellcheck="false">'+
+        '<button class="btn btn-sm btn-brand" data-act="sync-connect">连接</button>'+
+      '</div>'+
+      '<div class="hintbox">获取方式：打开 <b>github.com/settings/tokens/new</b> → '+
+        '只勾选 <b>gist</b>（不要勾 repo）→ 过期时间选 90 天 → 生成后复制。</div>'+
+      '</div></div>';
+  }
+
   h += '<div class="card"><div class="row"><span class="ic">'+icon("phone",18)+'</span>'+
     '<div class="tx"><b>添加到手机主屏幕</b><span>像 App 一样打开</span></div></div>'+
     '<div style="padding:0 14px 14px"><ol class="steps">'+
@@ -2506,6 +2940,14 @@ document.addEventListener("click", function(e){
     case "report-gen": genReport(b.getAttribute("data-w")); break;
     case "report-copy": copyReport(); break;
     case "resync": doResync(); break;
+    case "sync-connect": {
+      var inp = document.getElementById("syncToken");
+      syncConnect(inp ? inp.value : "");
+      break;
+    }
+    case "sync-now": syncNow(true); break;
+    case "sync-off": syncDisconnect(); break;
+    case "sync-off-yes": Sync.disconnect(); closeModal(); toast("已断开同步"); refreshAll(); break;
     case "clear-seed": clearSeed(); break;
     case "wipe": wipeAll(); break;
   }
@@ -2609,13 +3051,13 @@ function clearSeed(){
   var sids = state.scripts.filter(function(s){ return String(s.id).indexOf("seed-s") === 0; }).map(function(s){ return s.id; });
   if(!ids.length && !eids.length && !sids.length){ toast("没有示例数据了"); return; }
   state.checkins.filter(function(c){ return ids.indexOf(c.goalId) >= 0; })
-    .forEach(function(c){ pushCloud("checkins","delete",c); });
+    .forEach(function(c){ pushCloud("checkins","delete",c); markTomb("checkins", c.id); });
   state.goals.filter(function(g){ return ids.indexOf(g.id) >= 0; })
-    .forEach(function(g){ pushCloud("goals","delete",g); });
+    .forEach(function(g){ pushCloud("goals","delete",g); markTomb("goals", g.id); });
   state.events.filter(function(e){ return eids.indexOf(e.id) >= 0; })
-    .forEach(function(e){ pushCloud("events","delete",e); });
+    .forEach(function(e){ pushCloud("events","delete",e); markTomb("events", e.id); });
   state.scripts.filter(function(s){ return sids.indexOf(s.id) >= 0; })
-    .forEach(function(s){ pushCloud("scripts","delete",s); });
+    .forEach(function(s){ pushCloud("scripts","delete",s); markTomb("scripts", s.id); });
   state.checkins = state.checkins.filter(function(c){ return ids.indexOf(c.goalId) < 0; });
   state.goals = state.goals.filter(function(g){ return ids.indexOf(g.id) < 0; });
   state.events = state.events.filter(function(e){ return eids.indexOf(e.id) < 0; });
@@ -2628,11 +3070,11 @@ function clearSeed(){
 function wipeAll(){
   var v = document.getElementById("wipeInput");
   if(!v || v.value.trim() !== "清空"){ toast("请先输入「清空」两个字","err"); return; }
-  state.checkins.forEach(function(c){ pushCloud("checkins","delete",c); });
-  state.goals.forEach(function(g){ pushCloud("goals","delete",g); });
-  state.reviews.forEach(function(r){ pushCloud("reviews","delete",r); });
-  state.events.forEach(function(e){ pushCloud("events","delete",e); });
-  state.scripts.forEach(function(s){ pushCloud("scripts","delete",s); });
+  state.checkins.forEach(function(c){ pushCloud("checkins","delete",c); markTomb("checkins", c.id); });
+  state.goals.forEach(function(g){ pushCloud("goals","delete",g); markTomb("goals", g.id); });
+  state.reviews.forEach(function(r){ pushCloud("reviews","delete",r); markTomb("reviews", r.weekStart); });
+  state.events.forEach(function(e){ pushCloud("events","delete",e); markTomb("events", e.id); });
+  state.scripts.forEach(function(s){ pushCloud("scripts","delete",s); markTomb("scripts", s.id); });
   state.goals = []; state.checkins = []; state.reviews = []; state.events = []; state.scripts = [];
   ui.scriptId = null; ui.scriptDirty = false;
   afterCloud();
@@ -2651,7 +3093,7 @@ function boot(){
   if(local){
     state.goals = local.goals||[]; state.checkins = local.checkins||[];
     state.reviews = local.reviews||[]; state.events = local.events||[];
-    state.scripts = local.scripts||[];
+    state.scripts = local.scripts||[]; state.tombs = local.tombs||{};
   }
   else{
     var sd = seed();
@@ -2661,17 +3103,36 @@ function boot(){
   }
   refreshAll();
 
-  /* 2) 再连接资料库并拉取线上数据 */
+  /* 2) 多设备同步：先按本地缓存画出来，再后台拉云端 */
+  Sync.onchange = function(){
+    renderSyncBar();
+    if(ui.tab === "me") renderMe();
+  };
+  Sync.getLocal = envFromState;
+  Sync.applyMerged = applyMergedEnv;
+  Sync.load();
+  if(Sync.on()){
+    Sync.sync().catch(function(){});
+    /* 定时兜底：每 3 分钟拉一次 */
+    setInterval(function(){
+      if(document.visibilityState === "visible") Sync.sync().catch(function(){});
+    }, 180000);
+    /* 切回页面时立刻拉一次 */
+    document.addEventListener("visibilitychange", function(){
+      if(document.visibilityState === "visible") Sync.sync().catch(function(){});
+    });
+  }
+
+  /* 3) 最后才尝试连接资料库（在资料库环境里才成立） */
   DB.onchange = function(){ renderSyncBar(); };
   DB.boot().then(function(ok){
     renderSyncBar();
-    if(!ok){ renderSyncBar(); return; }
+    if(!ok) return;
     return DB.pull().then(function(r){
       mergeCloud(r);
       refreshAll();
-    }).catch(function(e){
+    }).catch(function(){
       renderSyncBar();
-      toast("读取资料库失败，已显示本地数据","err");
     });
   });
 }
