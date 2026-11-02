@@ -319,6 +319,27 @@ svg{display:block;flex:none}
 .sc-foot span{display:inline-flex;align-items:center;gap:4px}
 .sc-editbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sc-edit-acts{margin-left:auto;display:flex;gap:8px}
+/* ---------- 吾日三省吾身 ---------- */
+.kwcloud{display:flex;flex-wrap:wrap;gap:8px}
+.kwtag{
+  display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 12px;border-radius:20px;
+  border:1px solid var(--line2);background:#fff;font-size:13px;font-weight:700;color:var(--ink2);cursor:pointer;transition:.15s
+}
+.kwtag i{font-style:normal;font-size:11px;font-weight:800;color:var(--faint);background:var(--bg2);border-radius:10px;padding:1px 6px}
+.kwtag:hover{border-color:var(--brand);color:var(--brand)}
+.kwtag.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.kwtag.on i{background:rgba(255,255,255,.25);color:#fff}
+.rcard{padding:14px;cursor:pointer;transition:box-shadow .18s,transform .18s}
+.rcard:hover{box-shadow:0 8px 24px rgba(27,29,42,.1);transform:translateY(-2px)}
+.rc-top{display:flex;align-items:flex-start;gap:8px}
+.rc-top b{flex:1;min-width:0;font-size:14.5px;font-weight:700;line-height:1.45}
+.rc-top .btn-icon{width:30px;height:30px;flex:none}
+.rc-mood{display:inline-block;margin-top:8px;font-size:11px;font-weight:700;color:var(--ok);background:var(--ok-soft,#e7f8f1);border-radius:20px;padding:2px 9px}
+.rc-prev{margin:10px 0 12px;font-size:12.5px;line-height:1.65;color:var(--muted);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:20px}
+.rc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  border-top:1px solid var(--line);padding-top:10px;font-size:11.5px;color:var(--faint);font-weight:600}
+.rc-foot span{display:inline-flex;align-items:center;gap:4px}
 .sc-editor{padding:16px}
 .sc-editor .frow{margin-bottom:8px}
 .sc-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;font-size:11.5px;color:var(--faint);font-weight:600}
@@ -448,6 +469,7 @@ svg{display:block;flex:none}
         <section id="view-board" class="hide"></section>
         <section id="view-week" class="hide"></section>
         <section id="view-scripts" class="hide"></section>
+        <section id="view-reflect" class="hide"></section>
         <section id="view-me" class="hide"></section>
       </div>
     </div>
@@ -528,7 +550,9 @@ var ICONS = {
   calendar:'<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/>',
   trend:'<path d="M3.5 16.5 9 11l3.5 3.5L20.5 6.5"/><path d="M15.5 6.5h5v5"/>',
   script:'<rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="m16.5 9.5 5-3v11l-5-3z"/>',
-  back:'<path d="m14.6 18.4-6-6.4 6-6.4"/><path d="M9 12h10"/>'
+  back:'<path d="m14.6 18.4-6-6.4 6-6.4"/><path d="M9 12h10"/>',
+  reflect:'<circle cx="12" cy="12" r="8.8"/><path d="M8.6 13.6c.9 1.5 2 2.2 3.4 2.2s2.5-.7 3.4-2.2"/><path d="M9.2 9.4h.01M14.8 9.4h.01"/>',
+  eye:'<path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/>'
 };
 function icon(name, size, strokeWidth){
   size = size || 20;
@@ -601,15 +625,19 @@ var SCHEMA = {
   scripts: {
     title: "视频号文案表",
     cols: ["文案ID","主题","正文","字数","标签","创建时间","更新时间"]
+  },
+  reflections: {
+    title: "每日三省表",
+    cols: ["反思ID","日期","心得","心情","更新时间"]
   }
 };
 /* 统一的表名清单，避免各处硬编码遗漏 */
-var TABLES = ["goals","checkins","reviews","events","scripts"];
+var TABLES = ["goals","checkins","reviews","events","scripts","reflections"];
 
 var DB = {
   /* 状态：'boot' | 'cloud' | 'local' */
   mode: "boot",
-  ids: { goals:"", checkins:"", reviews:"", events:"", scripts:"" },
+  ids: { goals:"", checkins:"", reviews:"", events:"", scripts:"", reflections:"" },
   api: null,          /* 官方 SDK 的 database 对象，优先使用 */
   rpc: null,          /* 自建 RPC */
   user: null,
@@ -720,7 +748,7 @@ var DB = {
 
   ,pickFromList: function(list){
     var self = this;
-    var used = {goals:false, checkins:false, reviews:false, events:false, scripts:false};
+    var used = {goals:false, checkins:false, reviews:false, events:false, scripts:false, reflections:false};
     list.forEach(function(it){
       var id = typeof it === "string" ? it : (it.id || it.databaseId || it.nodeId || "");
       var name = (typeof it === "object" ? (it.name || it.title || "") : "");
@@ -818,10 +846,11 @@ var DB = {
       this.pullTable("checkins"),
       this.pullTable("reviews"),
       this.pullTable("events"),
-      this.pullTable("scripts")
+      this.pullTable("scripts"),
+      this.pullTable("reflections")
     ]).then(function(r){
       self.syncing = false; self.err = ""; self.lastSyncAt = Date.now(); self.emit();
-      return {goals:r[0], checkins:r[1], reviews:r[2], events:r[3], scripts:r[4]};
+      return {goals:r[0], checkins:r[1], reviews:r[2], events:r[3], scripts:r[4], reflections:r[5]};
     }).catch(function(e){
       self.syncing = false;
       self.err = (e && e.message) || "读取资料库失败";
@@ -946,6 +975,16 @@ var toProps = {
       "创建时间": {number:s.createdAt||0},
       "更新时间": {number:s.updatedAt||0}
     };
+  },
+  reflections: function(r){
+    var p = {
+      "反思ID": {text:r.id},
+      "日期": {date:r.date},
+      "心得": {text:r.text||""},
+      "更新时间": {number:r.updatedAt||0}
+    };
+    if(r.mood != null) p["心情"] = {text:r.mood};
+    return p;
   }
 };
 
@@ -1048,6 +1087,18 @@ function rowToScript(row){
   };
 }
 
+function rowToReflection(row){
+  var d = rowGet(row,"日期");
+  return {
+    id: String(rowGet(row,"反思ID")||""),
+    date: d ? String(d).slice(0,10) : todayStr(),
+    text: String(rowGet(row,"心得")||""),
+    mood: String(rowGet(row,"心情")||""),
+    updatedAt: Number(rowGet(row,"更新时间"))||0,
+    _rid: rowId(row)
+  };
+}
+
 /* =========================================================================
    3. GitHub Gist 多设备同步通道
    - 令牌只存在浏览器 localStorage：不写入页面源码、不上传任何第三方
@@ -1137,6 +1188,7 @@ function mergeEnv(a, b){
 var Sync = {
   API_BASE: "https://api.github.com",   /* 仅测试时可覆盖 */
   token: "", gistId: "", etag: "",
+  tokenExpires: "",       /* 令牌到期日 YYYY-MM-DD（GitHub 响应头给出，可能为空=永不过期） */
   status: "off",          /* off | ok | syncing | err */
   lastSyncAt: 0, err: "", stats: null,
   getLocal: null,         /* 由 UI 层注入：返回本地信封 */
@@ -1151,6 +1203,7 @@ var Sync = {
       var d = JSON.parse(localStorage.getItem(SYNC_LS) || "{}");
       this.token = String(d.token || "");
       this.gistId = String(d.gistId || "");
+      this.tokenExpires = String(d.tokenExpires || "");
       this.lastSyncAt = Number(d.lastSyncAt) || 0;
       if(this.token && this.gistId) this.status = "ok";
     }catch(e){}
@@ -1158,15 +1211,24 @@ var Sync = {
   persist: function(){
     try{
       localStorage.setItem(SYNC_LS, JSON.stringify({
-        token:this.token, gistId:this.gistId, lastSyncAt:this.lastSyncAt
+        token:this.token, gistId:this.gistId, lastSyncAt:this.lastSyncAt,
+        tokenExpires:this.tokenExpires
       }));
     }catch(e){}
   },
   disconnect: function(){
     this.token=""; this.gistId=""; this.etag=""; this.status="off";
-    this.err=""; this.stats=null; this.lastSyncAt=0;
+    this.err=""; this.stats=null; this.lastSyncAt=0; this.tokenExpires="";
     try{ localStorage.removeItem(SYNC_LS); }catch(e){}
     this.emit();
+  },
+
+  /* 到期信息：{date, daysLeft, expired}。daysLeft≤7 时 UI 提前提醒 */
+  expiryInfo: function(){
+    if(!this.tokenExpires) return null;
+    var today = todayStr();
+    var left = diffDays(today, this.tokenExpires);
+    return { date:this.tokenExpires, daysLeft:left, expired:left < 0 };
   },
 
   hdr: function(extra){
@@ -1186,6 +1248,12 @@ var Sync = {
     if(opt.body) init.body = opt.body;
     return fetch(this.API_BASE + path, init).then(function(res){
       var et = res.headers.get("ETag");
+      /* GitHub 会在响应头里带回令牌到期日；拿到就更新，UI 据此提前提醒 */
+      var exp = res.headers.get("GitHub-Authentication-Token-Expiration");
+      if(exp && /^\d{4}-\d{2}-\d{2}/.test(exp)){
+        exp = exp.slice(0,10);
+        if(exp !== self.tokenExpires){ self.tokenExpires = exp; self.persist(); self.emit(); }
+      }
       return res.text().then(function(txt){
         var data = null;
         try{ data = txt ? JSON.parse(txt) : null; }catch(e){ data = null; }
@@ -1336,7 +1404,7 @@ global.LG = {
   mondayOf:mondayOf, weekEndOf:weekEndOf, weekLabel:weekLabel, icon:icon,
   DB:DB, SCHEMA:SCHEMA, TABLES:TABLES, LS_KEY:LS_KEY,
   rowToGoal:rowToGoal, rowToCheckin:rowToCheckin, rowToReview:rowToReview,
-  rowToEvent:rowToEvent, rowToScript:rowToScript,
+  rowToEvent:rowToEvent, rowToScript:rowToScript, rowToReflection:rowToReflection,
   Sync:Sync, mergeEnv:mergeEnv, normalizeEnv:normalizeEnv, emptyEnv:emptyEnv,
   GIST_DESC:GIST_DESC
 };
@@ -1363,15 +1431,17 @@ var COLORS = ["#7c5cff","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#14b8
 var LS = T.LS_KEY;
 
 /* ------------------------------ 状态 ------------------------------ */
-var state = { goals:[], checkins:[], reviews:[], events:[], scripts:[], tombs:{} };
+var state = { goals:[], checkins:[], reviews:[], events:[], scripts:[], reflections:[], tombs:{} };
 var ui = { tab:"today", weekOffset:0, boardChart:true, calMonth:"", calDay:"",
-  scriptId:null, scriptDirty:false };   /* scriptId: null=文案总览，字符串=编辑某篇 */
+  scriptId:null, scriptDirty:false,    /* scriptId: null=文案总览，字符串=编辑某篇 */
+  reflectId:null, reflectDirty:false, reflectKw:"" };   /* reflectId: null=三省总览，"__new__"=新写，否则=某天 */
 
 /* ------------------------------ 本地持久化 ------------------------------ */
 function saveLocal(){
   try{ localStorage.setItem(LS, JSON.stringify({
     goals:state.goals, checkins:state.checkins, reviews:state.reviews,
-    events:state.events, scripts:state.scripts, tombs:state.tombs||{}
+    events:state.events, scripts:state.scripts, reflections:state.reflections,
+    tombs:state.tombs||{}
   })); }catch(e){}
   if(!applyingRemote) syncTouch();   /* 任何一次落盘都安排一次云端同步 */
 }
@@ -1384,6 +1454,7 @@ function loadLocal(){
     /* 向后兼容：老数据缺字段时补空数组 */
     if(!Array.isArray(d.events)) d.events = [];
     if(!Array.isArray(d.scripts)) d.scripts = [];
+    if(!Array.isArray(d.reflections)) d.reflections = [];
     if(!d.tombs || typeof d.tombs !== "object") d.tombs = {};
     return d;
   }catch(e){ return null; }
@@ -1468,6 +1539,22 @@ function syncDisconnect(){
     '<button class="btn btn-danger" data-act="sync-off-yes">确认断开</button></div>'
   );
 }
+/* 更换令牌（到期前/后都用这个入口）：同一账号新令牌会找回同一个云端空间 */
+function renewModal(){
+  openModal(
+    '<h3>更换同步令牌</h3>'+
+    '<p class="mini muted" style="margin:0 0 10px">去 github.com/settings/tokens/new 生成一个'+
+    '<b>只勾 gist</b> 的新令牌（过期时间选 90 天），粘贴到这里。'+
+    '同一个账号会接回同一个云端空间，数据不变。</p>'+
+    '<div class="inline-form">'+
+    '<input id="renewToken" type="password" placeholder="ghp_ 开头的新令牌" autocomplete="off" spellcheck="false">'+
+    '<button class="btn btn-brand" data-act="sync-renew">确认更换</button></div>'
+  );
+  setTimeout(function(){
+    var inp = document.getElementById("renewToken");
+    if(inp) inp.focus();
+  }, 60);
+}
 function syncTimeText2(){
   if(!Sync.lastSyncAt) return "尚未同步";
   var d = new Date(Sync.lastSyncAt);
@@ -1478,6 +1565,26 @@ function syncPill(){
   if(Sync.status === "err")     return ['sp-err', '异常'];
   if(Sync.status === "ok")      return ['sp-on', '已同步'];
   return ['sp-off', '未连接'];
+}
+
+/* 令牌到期提醒：≤7 天提前预警，已到期红色。返回 HTML 片段（可为空串） */
+function expiryWarnHTML(){
+  var ei = Sync.expiryInfo();
+  if(!ei) return "";
+  if(ei.expired){
+    return '<div class="alert alert-red-box">'+icon("alert",16)+
+      '<div><b>同步令牌已于 '+esc(fmtShort(ei.date))+' 到期。</b><br>'+
+      '同步已无法使用，数据都还在本机和云端。'+
+      '<div class="a-acts"><button class="btn btn-xs" data-act="sync-show-renew">更换令牌</button></div></div></div>';
+  }
+  if(ei.daysLeft <= 7){
+    return '<div class="alert alert-amber-box">'+icon("clock",16)+
+      '<div><b>同步令牌还有 '+ei.daysLeft+' 天到期（'+esc(fmtShort(ei.date))+'）。</b><br>'+
+      '提前换好就不用断：去 github.com/settings/tokens/new 重新生成一个（只勾 gist），'+
+      '回来点「更换令牌」粘贴即可，数据不会丢。'+
+      '<div class="a-acts"><button class="btn btn-xs" data-act="sync-show-renew">更换令牌</button></div></div></div>';
+  }
+  return "";
 }
 
 /* ------------------------------ 示例数据 ------------------------------ */
@@ -1517,7 +1624,7 @@ function seed(){
   }
   ev.n = 0;
   var es = [
-    /* 今天：会出现在「今天要处理」 */
+    /* 今天 */
     ev("英语模考（第 3 单元）", 0, "20:00", "#7c5cff", "seed-g1", "带手表计时，先做阅读"),
     /* 后天 */
     ev("Python 课程直播答疑", 2, "19:30", "#f59e0b", "seed-g3", "把环境配置的问题清单带过去"),
@@ -1546,7 +1653,18 @@ function seed(){
       "【开头】很多人以为等待期是故意拖，其实是个观察窗口。\n【正文】讲清原理：避免已经发生的事被倒着塞进来。不同责任、不同产品不一样，以条款为准。\n【收束】这期只讲原理，不推荐产品。",
       "示例·科普", 6)
   ];
-  return { goals:[g1,g2,g3], checkins:cs, reviews:[], events:es, scripts:ss };
+  /* 每日三省：3 条不同主题的示例，文字刻意有重复关键词，方便看到关键词云效果 */
+  function rf(off, text, mood, ago){
+    return { id:"seed-r"+(++rf.n), date:addDays(t,-off), text:text, mood:mood||"",
+      createdAt:Date.now()-ago*864e5, updatedAt:Date.now()-ago*864e5 };
+  }
+  rf.n = 0;
+  var rs = [
+    rf(0, "今天通勤背了 60 个单词，比昨天快。发现最大的障碍还是刷手机，对策起效了：把单词本放枕头上，先背再看手机。明天继续保持。", "顺利", 0),
+    rf(1, "晚上动了不想动的念头，还是把 20 分钟运动做完了。做完状态明显更好——运动果然是打断拖延最快的办法。", "一般后转好", 1),
+    rf(3, "见客户聊家庭保障，对方问等待期，我用「观察窗口」讲清楚了。把这个词记下来，下次拍视频号文案可以用。", "有收获", 3)
+  ];
+  return { goals:[g1,g2,g3], checkins:cs, reviews:[], events:es, scripts:ss, reflections:rs };
 }
 
 /* ------------------------------ 计算层 ------------------------------ */
@@ -1650,7 +1768,7 @@ function mergeCloud(remote){
   T.TABLES.forEach(function(k){
     var rows = remote[k] || [];
     var conv = { goals:T.rowToGoal, checkins:T.rowToCheckin, reviews:T.rowToReview,
-                 events:T.rowToEvent, scripts:T.rowToScript }[k];
+                 events:T.rowToEvent, scripts:T.rowToScript, reflections:T.rowToReflection }[k];
     rows.forEach(function(row){
       var r = conv(row);
       if(k === "reviews"){
@@ -1987,6 +2105,7 @@ var TABS = [
   {k:"board", n:"看板", i:"board"},
   {k:"week",  n:"周报", i:"week"},
   {k:"scripts", n:"文案", i:"script"},
+  {k:"reflect", n:"三省", i:"reflect"},
   {k:"me",    n:"我的", i:"me"}
 ];
 
@@ -2019,8 +2138,14 @@ function renderSyncBar(){
       box="err"; txt="同步异常："+esc(Sync.err)+"　数据已保存在本地，可重试";
       act='<button class="btn btn-xs" data-act="sync-now">重试</button>';
     }
-    else { box="on"; txt="多设备同步已开启 · "+syncTimeText2();
-      act='<button class="btn btn-xs" data-act="sync-now">立即同步</button>'; }
+    else {
+      var ei0 = Sync.expiryInfo();
+      box = (ei0 && ei0.expired) ? "err" : "on";
+      txt = "多设备同步已开启 · "+syncTimeText2()+
+        (ei0 ? (ei0.expired ? " · <b>令牌已到期，去「我的」更换</b>"
+             : (ei0.daysLeft <= 7 ? " · 令牌 "+ei0.daysLeft+" 天后到期" : "")) : "");
+      act='<button class="btn btn-xs" data-act="sync-now">立即同步</button>';
+    }
   }
   else if(DB.mode === "boot"){ box="sync"; txt="正在连接资料库…"; }
   else if(DB.mode === "cloud"){
@@ -2120,7 +2245,7 @@ function goalCardHTML(g, opts){
   }
 
   /* 昨日漏打卡的打扰式提示卡已移除（黄卡休息日 / 红卡连续中断）；
-     漏卡信息保留在「今天要处理」置顶区，连续天数算法照常运行 */
+     漏卡目标按排序规则置前显示，连续天数算法照常运行 */
 
   /* 逾期 */
   if(s.overdueDays > 0 && !s.finished){
@@ -2174,7 +2299,6 @@ function renderToday(){
   var el = document.getElementById("view-today");
   var gs = sortedGoals();
   var t = todayStr();
-  var pending = gs.filter(function(g){ var s=stat(g); return !s.finished && (s.overdueDays>0 || s.missedY); });
   var todayEv = eventsOn(t).filter(function(e){ return !e.done; });
   var doneToday = state.checkins.filter(function(c){ return c.date === t; }).length;
 
@@ -2183,34 +2307,26 @@ function renderToday(){
     '<p>'+t+' · 建议量按剩余量 ÷ 剩余天数自动算好</p>'+
     '<div class="hero-stats">'+
       '<div class="hero-stat"><b>'+gs.length+'</b><span>在追目标</span></div>'+
-      '<div class="hero-stat"><b>'+(pending.length + todayEv.length)+'</b><span>今天要处理</span></div>'+
+      '<div class="hero-stat"><b>'+todayEv.length+'</b><span>今日安排</span></div>'+
       '<div class="hero-stat"><b>'+doneToday+'</b><span>今日已打卡</span></div>'+
     '</div></div></div>';
 
   h += '<div class="sec"><button class="btn btn-brand btn-block" data-act="goal-new" style="height:46px">'+
     icon("plus",18)+'新建学习目标</button></div>';
 
-  if(pending.length || todayEv.length){
-    h += '<div class="sec"><div class="sec-h">'+icon("zap",17)+'<h2>今天要处理</h2>'+
-      '<span class="cnt">'+(pending.length + todayEv.length)+' 项</span></div>';
-    pending.forEach(function(g){
-      var s = stat(g);
-      var kind = s.overdueDays>0 ? "逾期 "+s.overdueDays+" 天"
-        : (s.broke ? "昨日断卡，已滚入今日" : "昨日休息日");
-      h += '<div class="card row" style="margin-bottom:10px">'+
-        '<span class="ic" style="background:'+(s.broke||s.overdueDays>0?"var(--danger-soft)":"var(--warn-soft)")+
-        ';color:'+(s.broke||s.overdueDays>0?"var(--danger)":"var(--warn)")+'">'+icon(s.broke||s.overdueDays>0?"alert":"moon",17)+'</span>'+
-        '<div class="tx"><b>'+esc(g.name)+'</b><span>'+kind+' · 建议 '+trimNum(s.suggest)+' '+esc(g.unit)+'</span></div>'+
-        '<button class="btn btn-xs btn-brand" data-act="focus" data-id="'+g.id+'">打卡</button>'+
-        '</div>';
-    });
-    /* 今天的日历活动一并置顶，别让它躲在日历里 */
+  /* 置顶的目标待办板块已按需求移除：逾期/漏卡目标仍会在下方列表
+     优先排序（sortedGoals）并在卡片内显示逾期天数。
+     这里只保留当天日历活动——它属于「今天要做的事」，和待办卡不是一回事 */
+
+  if(todayEv.length){
+    h += '<div class="sec"><div class="sec-h">'+icon("calendar",17)+'<h2>今天的安排</h2>'+
+      '<span class="cnt">'+todayEv.length+' 项</span></div>';
     h += todayEv.map(function(e){
       var gn = goalName(e.goalId);
       return '<div class="card row" style="margin-bottom:10px">'+
         '<span class="ic" style="background:'+esc(e.color)+'1f;color:'+esc(e.color)+'">'+icon("calendar",17)+'</span>'+
-        '<div class="tx"><b>'+esc(e.title)+'</b><span>今天的安排'+
-          (e.time? " · "+esc(e.time):"")+(gn? " · 关联「"+esc(gn)+"」":"")+'</span></div>'+
+        '<div class="tx"><b>'+esc(e.title)+'</b><span>'+
+          (e.time? esc(e.time)+" · ":"")+"今天的安排"+(gn? " · 关联「"+esc(gn)+"」":"")+'</span></div>'+
         '<button class="btn btn-xs btn-brand" data-act="event-done" data-id="'+e.id+'">完成</button>'+
         '</div>';
     }).join("");
@@ -2649,6 +2765,275 @@ function delScript(id){
   refreshAll();
 }
 
+/* ============================ 吾日三省吾身 ============================ */
+var REFLECT_NEW = "__new__";       /* 尚未落盘的新心得 */
+var reflectSaveTimer = null;       /* 输入防抖自动保存 */
+
+function findReflect(id){ return state.reflections.filter(function(x){ return x.id===id; })[0]; }
+function reflectByDate(date){ return state.reflections.filter(function(x){ return x.date===date; })[0]; }
+function sortedReflections(){
+  return state.reflections.slice().sort(function(a,b){
+    if(a.date !== b.date) return a.date > b.date ? -1 : 1;
+    return (b.updatedAt||0) - (a.updatedAt||0);
+  });
+}
+function reflectTime(ts){
+  if(!ts) return "未保存";
+  var d = new Date(ts);
+  return T.fmtDate(d)+" "+T.pad(d.getHours())+":"+T.pad(d.getMinutes());
+}
+
+/* ---- 关键词提取（中文 2-3 字 n-gram 频率 + 英文单词），纯函数可单测 ---- */
+var KW_STOP = "的了是我你他她它们在和与也就都很到说要去会能有没不这那又再才只把被让给跟对从向但可是因为所以如果虽然然后还是已经觉得着过得地最更太非常真比较啊呀哦吗呢吧嗯呃首先其次最后一下有些一直开始继续上次下次每天每天一个两个".split("");
+function kwBoundaryOK(w){
+  var a = w.charAt(0), b = w.charAt(w.length-1);
+  return KW_STOP.indexOf(a) < 0 && KW_STOP.indexOf(b) < 0;
+}
+function extractKeywords(entries){
+  var text = (entries||[]).map(function(e){ return String(e && e.text || ""); }).join("\n");
+  var freq = {};
+  function bump(w){
+    if(w.length < 2) return;
+    if(!kwBoundaryOK(w)) return;
+    freq[w] = (freq[w]||0)+1;
+  }
+  /* 中文：切出纯汉字串，滑窗取 2/3 字组合 */
+  (text.match(/[\u4e00-\u9fff]{2,}/g) || []).forEach(function(run){
+    for(var n=2; n<=3; n++){
+      for(var i=0; i+n<=run.length; i++) bump(run.substr(i,n));
+    }
+  });
+  /* 英文/数字词 */
+  (text.match(/[A-Za-z][A-Za-z0-9+#.-]{1,}/g) || []).forEach(function(w){
+    var k = w.toLowerCase().replace(/[.-]+$/,"");
+    if(k.length >= 2 && !freq[k]) freq[k] = 0;
+    (function(){ freq[k] = (freq[k]||0)+1; })();
+  });
+  var arr = Object.keys(freq).map(function(w){ return { w:w, n:freq[w] }; });
+  /* 3 字词已覆盖的 2 字词去掉（“等待期”胜出，“等待”“待期”不再单列） */
+  var longs = arr.filter(function(x){ return x.w.length >= 3; });
+  arr = arr.filter(function(x){
+    if(x.w.length !== 2) return true;
+    return !longs.some(function(L){ return L.n >= x.n && L.w.indexOf(x.w) >= 0; });
+  });
+  arr = arr.filter(function(x){ return x.n >= 2; });
+  arr.sort(function(a,b){
+    if(b.n !== a.n) return b.n - a.n;
+    if(b.w.length !== a.w.length) return b.w.length - a.w.length;
+    return a.w.localeCompare(b.w);
+  });
+  return arr.slice(0,12);
+}
+
+/* ---- 渲染入口 ---- */
+function renderReflect(){
+  var el = document.getElementById("view-reflect");
+  if(ui.reflectId && ui.reflectId !== REFLECT_NEW && !findReflect(ui.reflectId)) ui.reflectId = null;
+  el.innerHTML = ui.reflectId ? reflectEditorHTML() : reflectOverviewHTML();
+}
+
+/* ---- 总览：关键词云 + 心得列表 ---- */
+function reflectOverviewHTML(){
+  var list = sortedReflections();
+  var kws = extractKeywords(state.reflections);
+  var today = reflectByDate(todayStr());
+  var shown = ui.reflectKw
+    ? list.filter(function(r){ return (r.text||"").indexOf(ui.reflectKw) >= 0 || (r.mood||"") === ui.reflectKw; })
+    : list;
+
+  var h = '<div class="hero"><div class="hero-in">'+
+    '<h1>吾日三省吾身</h1>'+
+    '<p>每天写几句，写下来的才算是自己的</p>'+
+    '<div class="hero-stats">'+
+      '<div class="hero-stat"><b>'+list.length+'</b><span>篇心得</span></div>'+
+      '<div class="hero-stat"><b>'+kws.length+'</b><span>个关键词</span></div>'+
+      '<div class="hero-stat"><b>'+(today ? "已写" : "未写")+'</b><span>今天</span></div>'+
+    '</div></div></div>';
+
+  h += '<div class="sec"><button class="btn btn-brand btn-block" data-act="reflect-new" style="height:46px">'+
+    icon("plus",18)+(today ? "改今天的三省" : "写今天的三省")+'</button></div>';
+
+  /* 关键词云 */
+  h += '<div class="sec"><div class="sec-h">'+icon("eye",17)+'<h2>心得关键词</h2>'+
+    '<span class="cnt">'+kws.length+' 个</span></div>';
+  if(!kws.length){
+    h += '<div class="card empty">'+icon("eye",30)+
+      '<p>关键词会从你写过的心德里自动提取。<br>写得越多，这里越能看出你在关注什么。</p></div>';
+  }else{
+    h += '<div class="kwcloud">'+kws.map(function(k){
+      var on = ui.reflectKw === k.w;
+      return '<button class="kwtag'+(on?" on":"")+'" data-act="reflect-kw" data-id="'+esc(k.w)+'">'+
+        esc(k.w)+'<i>'+k.n+'</i></button>';
+    }).join("")+'</div>';
+    if(ui.reflectKw){
+      h += '<div style="margin-top:8px"><button class="btn btn-xs" data-act="reflect-kw-clear">'+
+        '清除筛选「'+esc(ui.reflectKw)+'」 ×</button></div>';
+    }
+  }
+  h += '</div>';
+
+  /* 心得列表 */
+  h += '<div class="sec"><div class="sec-h">'+icon("reflect",17)+'<h2>全部心得</h2>'+
+    '<span class="cnt">'+shown.length+' 篇</span></div>';
+  if(!list.length){
+    h += '<div class="card empty">'+icon("reflect",30)+
+      '<p>还没有心得。<br>今天遇到什么、卡在哪、什么起了效，几句就好。</p>'+
+      '<button class="btn btn-brand" data-act="reflect-new">'+icon("plus",16)+'写第一篇</button></div>';
+  }else if(!shown.length){
+    h += '<div class="card empty">'+icon("eye",30)+
+      '<p>没有提到「'+esc(ui.reflectKw)+'」的心得。</p></div>';
+  }else{
+    h += shown.map(function(r){
+      var prev = String(r.text||"").replace(/\s+/g," ").slice(0,72);
+      if(String(r.text||"").length > 72) prev += "…";
+      var isToday = r.date === todayStr();
+      return '<div class="card rcard" data-act="reflect-open" data-id="'+esc(r.id)+'">'+
+        '<div class="rc-top"><b>'+fmtCnDate(r.date)+(isToday?' <span class="sc-tag">今天</span>':'')+'</b>'+
+        '<button class="btn-icon btn-del" data-act="reflect-del" data-id="'+esc(r.id)+'" aria-label="删除">'+icon("trash",15)+'</button></div>'+
+        (r.mood ? '<span class="rc-mood">'+esc(r.mood)+'</span>' : '')+
+        '<p class="rc-prev">'+esc(prev || "（还没写内容，点开补上）")+'</p>'+
+        '<div class="rc-foot"><span>'+icon("pencil",13)+' 点开修改</span><span>'+esc(reflectTime(r.updatedAt))+'</span></div>'+
+      '</div>';
+    }).join("");
+  }
+  return h + '</div>';
+}
+
+/* ---- 编辑器：一天一篇，选已有日期即修改那天 ---- */
+function reflectEditorHTML(){
+  var isNew = ui.reflectId === REFLECT_NEW;
+  var r = isNew ? { id:"", date:todayStr(), text:"", mood:"", updatedAt:0 } : findReflect(ui.reflectId);
+  if(!r) return "";
+  var h = '<div class="sec"><div class="sc-editbar">'+
+    '<button class="btn btn-ghost btn-sm" data-act="reflect-back">'+icon("back",15)+'返回总览</button>'+
+    '<div class="sc-edit-acts">'+
+      '<button class="btn btn-brand btn-sm" data-act="reflect-save">'+icon("save",15)+'保存</button>'+
+      (isNew ? '' : '<button class="btn btn-ghost btn-sm btn-del" data-act="reflect-del" data-id="'+esc(r.id)+'">删除</button>')+
+    '</div></div></div>';
+
+  h += '<div class="card sc-editor">'+
+    '<div class="f2"><div class="frow"><label>日期（同一天只保留一篇）</label>'+
+      '<input id="reflectDate" type="date" value="'+esc(r.date)+'"></div>'+
+    '<div class="frow"><label>心情（选填）</label>'+
+      '<input id="reflectMood" type="text" maxlength="12" placeholder="例：顺利 / 卡住了 / 有收获" value="'+esc(r.mood||"")+'"></div></div>'+
+    '<div class="sc-meta"><span id="reflectCount">'+String(r.text||"").replace(/\s/g,"").length+' 字</span>'+
+      '<span>'+(isNew ? "新心得，还没保存" : "最近保存 "+esc(reflectTime(r.updatedAt)))+'</span>'+
+      '<span class="sc-auto">输入后自动保存</span></div>'+
+    '<textarea id="reflectBody" data-role="reflect-body" placeholder="今天的三省，想到哪写到哪：&#10;· 做得好的是什么？&#10;· 卡在哪里了？&#10;· 明天试一个什么小改变？">'+esc(r.text)+'</textarea>'+
+  '</div>';
+  return h;
+}
+
+/* ---- 落盘 ---- */
+function commitReflect(text, date, mood, notify){
+  var isNew = ui.reflectId === REFLECT_NEW, r;
+  var d = String(date||"").slice(0,10) || todayStr();
+  /* 同一天只保留一篇：改到已有日期时并入那一篇 */
+  var exist = reflectByDate(d);
+  if(isNew){
+    if(exist){
+      ui.reflectId = exist.id; r = exist; isNew = false;
+      toast("那天已经写过了，帮你并进那一篇","ok");
+    }else{
+      var now = Date.now();
+      r = { id:uid(), date:d, text:"", mood:"", createdAt:now, updatedAt:now };
+      state.reflections.push(r);
+      ui.reflectId = r.id;
+    }
+  }else{
+    r = findReflect(ui.reflectId);
+    if(!r) return;
+    if(exist && exist.id !== r.id){
+      /* 把当前内容并入已存在的那篇，删掉当前这篇 */
+      exist.text = text; exist.mood = mood || exist.mood; exist.updatedAt = Date.now();
+      pushCloud("reflections","update",exist);
+      pushCloud("reflections","delete",r); markTomb("reflections", r.id);
+      state.reflections = state.reflections.filter(function(x){ return x.id !== r.id; });
+      ui.reflectId = exist.id;
+      afterCloud();
+      if(notify){ ui.reflectId = null; toast("已并入那天的心得","ok"); }
+      refreshAll();
+      return;
+    }
+    r.date = d;
+  }
+  r.text = String(text||"");
+  r.mood = String(mood||"").trim();
+  r.updatedAt = Date.now();
+  ui.reflectDirty = false;
+  pushCloud("reflections", isNew ? "add" : "update", r);
+  afterCloud();
+  if(notify){
+    /* 手动点「保存」后回总览；自动保存则停在编辑器，不打断输入 */
+    ui.reflectId = null;
+    toast("心得已保存","ok");
+    refreshAll();
+  }else{
+    var cnt = document.getElementById("reflectCount");
+    if(cnt) cnt.textContent = r.text.replace(/\s/g,"").length + " 字";
+  }
+}
+
+function newReflect(){
+  flushReflectDraft();
+  ui.reflectId = REFLECT_NEW; ui.reflectDirty = false; ui.reflectKw = "";
+  refreshAll(); window.scrollTo(0,0);
+  setTimeout(function(){
+    var ta = document.getElementById("reflectBody");
+    if(ta) ta.focus();
+  }, 60);
+}
+function openReflect(id){
+  if(!findReflect(id)) return;
+  flushReflectDraft();
+  ui.reflectId = id; ui.reflectDirty = false; ui.reflectKw = "";
+  refreshAll(); window.scrollTo(0,0);
+}
+function backToReflect(){
+  flushReflectDraft();
+  ui.reflectId = null; ui.reflectDirty = false;
+  refreshAll(); window.scrollTo(0,0);
+}
+function saveReflectFromEditor(){
+  var ta = document.getElementById("reflectBody");
+  var dd = document.getElementById("reflectDate");
+  var md = document.getElementById("reflectMood");
+  if(!ta || !dd) return;
+  if(!ta.value.replace(/\s/g,"")){ toast("还没写内容","err"); return; }
+  commitReflect(ta.value, dd.value, md ? md.value : "", true);
+}
+function confirmDelReflect(id){
+  var r = findReflect(id); if(!r) return;
+  openModal(
+    '<h3>删除这篇心得？</h3>'+
+    '<p class="mini muted" style="margin:6px 0 0">'+esc(fmtCnDate(r.date))+' 的三省，删除后无法恢复。</p>'+
+    '<div class="m-acts"><button class="btn btn-ghost" data-act="modal-close">再想想</button>'+
+    '<button class="btn btn-danger" data-act="reflect-del-yes" data-id="'+esc(id)+'">确认删除</button></div>'
+  );
+}
+function delReflect(id){
+  var r = findReflect(id);
+  if(!r) return;
+  pushCloud("reflections","delete",r);
+  markTomb("reflections", id);
+  state.reflections = state.reflections.filter(function(x){ return x.id !== id; });
+  if(ui.reflectId === id){ ui.reflectId = null; ui.reflectDirty = false; }
+  clearTimeout(reflectSaveTimer);
+  closeModal(); afterCloud();
+  toast("心得已删除","ok");
+  refreshAll();
+}
+function flushReflectDraft(){
+  clearTimeout(reflectSaveTimer);
+  if(ui.tab !== "reflect" || !ui.reflectId || !ui.reflectDirty) return;
+  var ta = document.getElementById("reflectBody");
+  var dd = document.getElementById("reflectDate");
+  var md = document.getElementById("reflectMood");
+  if(!ta || !dd) return;
+  if(!ta.value.replace(/\s/g,"")) return;   /* 空的不落盘 */
+  commitReflect(ta.value, dd.value, md ? md.value : "", false);
+}
+
 /* ---- Tab 3：看板 ---- */
 function ringSVG(rate, color){
   var R = 32, C = 2*Math.PI*R;
@@ -2806,13 +3191,16 @@ function renderMe(){
       '<div class="tx"><b>多设备同步</b><span>'+syncTimeText2()+'</span></div>'+
       '<span class="status-pill '+sp1[0]+'">'+sp1[1]+'</span></div>'+
       '<div style="padding:0 14px 14px">'+
+      expiryWarnHTML()+
       (Sync.err ? '<div class="alert alert-red-box" style="margin-top:0">'+icon("alert",16)+
         '<div><b>'+esc(Sync.err)+'</b>'+
         '<div class="a-acts"><button class="btn btn-xs" data-act="sync-now">重试</button></div>'+
         '</div></div>' : '')+
       '<p class="mini muted" style="margin:0 0 10px">'+
         '手机和电脑的数据会自动保持一致：每次改动约 3 秒后上传，打开页面时自动拉取。'+
-        '同一条记录以最后修改的为准，删掉的不会被别的设备推回来。</p>'+
+        '同一条记录以最后修改的为准，删掉的不会被别的设备推回来。'+
+        (Sync.tokenExpires ? '令牌有效期至 <b>'+esc(fmtShort(Sync.tokenExpires))+'</b>，到期前 7 天这里会提醒你更换。' : '')+
+      '</p>'+
       '<div class="inline-form">'+
         '<button class="btn btn-sm btn-brand" data-act="sync-now">'+icon("refresh",15)+'立即同步</button>'+
         '<button class="btn btn-sm" data-act="sync-off">断开同步</button>'+
@@ -2863,7 +3251,7 @@ function renderMe(){
 /* ------------------------------ 统一刷新入口 ------------------------------ */
 function refreshAll(){
   var views = {today:"view-today", calendar:"view-calendar", board:"view-board",
-    week:"view-week", scripts:"view-scripts", me:"view-me"};
+    week:"view-week", scripts:"view-scripts", reflect:"view-reflect", me:"view-me"};
   Object.keys(views).forEach(function(k){
     document.getElementById(views[k]).className = (ui.tab === k ? "" : "hide");
   });
@@ -2874,6 +3262,7 @@ function refreshAll(){
   else if(ui.tab === "board") renderBoard();
   else if(ui.tab === "week") renderWeek();
   else if(ui.tab === "scripts") renderScripts();
+  else if(ui.tab === "reflect") renderReflect();
   else if(ui.tab === "me") renderMe();
 }
 
@@ -2898,9 +3287,10 @@ document.addEventListener("click", function(e){
   var id = b.getAttribute("data-id");
   switch(act){
     case "tab":
-      flushScriptDraft();
-      /* 离开文案 Tab 后回到总览，方便下次挑不同的主题 */
+      flushScriptDraft(); flushReflectDraft();
+      /* 离开编辑页后回到总览，方便下次挑不同的主题 */
       if(ui.tab === "scripts" && b.getAttribute("data-k") !== "scripts") ui.scriptId = null;
+      if(ui.tab === "reflect" && b.getAttribute("data-k") !== "reflect") ui.reflectId = null;
       ui.tab = b.getAttribute("data-k"); refreshAll(); window.scrollTo(0,0); break;
     case "modal-close": closeModal(); break;
     case "script-new": newScript(); break;
@@ -2909,6 +3299,14 @@ document.addEventListener("click", function(e){
     case "script-save": saveScriptFromEditor(); break;
     case "script-del": confirmDelScript(id); break;
     case "script-del-yes": delScript(id); break;
+    case "reflect-new": newReflect(); break;
+    case "reflect-open": openReflect(id); break;
+    case "reflect-back": backToReflect(); break;
+    case "reflect-save": saveReflectFromEditor(); break;
+    case "reflect-del": confirmDelReflect(id); break;
+    case "reflect-del-yes": delReflect(id); break;
+    case "reflect-kw": flushReflectDraft(); ui.reflectId = null; ui.reflectKw = (ui.reflectKw === id ? "" : id); refreshAll(); break;
+    case "reflect-kw-clear": ui.reflectKw = ""; refreshAll(); break;
     case "goal-new": goalModal(null); break;
     case "goal-edit": goalModal(state.goals.find(function(x){ return x.id===id; })); break;
     case "goal-save": saveGoalFromModal(id); break;
@@ -2946,6 +3344,14 @@ document.addEventListener("click", function(e){
       break;
     }
     case "sync-now": syncNow(true); break;
+    case "sync-show-renew": renewModal(); break;
+    case "sync-renew": {
+      var rt = document.getElementById("renewToken");
+      var v2 = rt ? rt.value : "";
+      closeModal();
+      syncConnect(v2);
+      break;
+    }
     case "sync-off": syncDisconnect(); break;
     case "sync-off-yes": Sync.disconnect(); closeModal(); toast("已断开同步"); refreshAll(); break;
     case "clear-seed": clearSeed(); break;
@@ -2957,23 +3363,40 @@ document.addEventListener("click", function(e){
   if(e.target && e.target.getAttribute && e.target.getAttribute("data-mask")) closeModal();
 });
 
-/* 文案编辑器：字数实时更新 + 输入防抖自动保存（不重渲染，避免打断输入） */
+/* 编辑器公用：字数实时更新 + 输入防抖自动保存（不重渲染，避免打断输入） */
 document.addEventListener("input", function(e){
   var el = e.target;
   if(!el || !el.getAttribute) return;
   var isBody = el.getAttribute("data-role") === "script-body";
   var isTitle = el.id === "scriptTitle";
-  if(!isBody && !isTitle) return;
   if(isBody){
     var cnt = document.getElementById("scriptCount");
     if(cnt) cnt.textContent = scriptWords(el.value) + " 字";
   }
-  ui.scriptDirty = true;
-  clearTimeout(scriptSaveTimer);
-  scriptSaveTimer = setTimeout(function(){
-    var ta = document.getElementById("scriptBody"), ti = document.getElementById("scriptTitle");
-    if(ta && ti) commitScript(ta.value, ti.value, false);
-  }, 800);
+  if(isBody || isTitle){
+    ui.scriptDirty = true;
+    clearTimeout(scriptSaveTimer);
+    scriptSaveTimer = setTimeout(function(){
+      var ta = document.getElementById("scriptBody"), ti = document.getElementById("scriptTitle");
+      if(ta && ti) commitScript(ta.value, ti.value, false);
+    }, 800);
+    return;
+  }
+  /* 三省编辑器 */
+  if(el.getAttribute("data-role") === "reflect-body" || el.id === "reflectDate" || el.id === "reflectMood"){
+    if(el.getAttribute("data-role") === "reflect-body"){
+      var rc = document.getElementById("reflectCount");
+      if(rc) rc.textContent = String(el.value||"").replace(/\s/g,"").length + " 字";
+    }
+    ui.reflectDirty = true;
+    clearTimeout(reflectSaveTimer);
+    reflectSaveTimer = setTimeout(function(){
+      var ta = document.getElementById("reflectBody");
+      var dd = document.getElementById("reflectDate");
+      var md = document.getElementById("reflectMood");
+      if(ta && dd && ta.value.replace(/\s/g,"")) commitReflect(ta.value, dd.value, md?md.value:"", false);
+    }, 800);
+  }
 });
 
 function saveReview(mon){
@@ -3049,7 +3472,8 @@ function clearSeed(){
   var ids = state.goals.filter(function(g){ return (g.tags||[]).indexOf("示例") >= 0; }).map(function(g){ return g.id; });
   var eids = state.events.filter(function(e){ return String(e.id).indexOf("seed-e") === 0; }).map(function(e){ return e.id; });
   var sids = state.scripts.filter(function(s){ return String(s.id).indexOf("seed-s") === 0; }).map(function(s){ return s.id; });
-  if(!ids.length && !eids.length && !sids.length){ toast("没有示例数据了"); return; }
+  var rids = state.reflections.filter(function(r){ return String(r.id).indexOf("seed-r") === 0; }).map(function(r){ return r.id; });
+  if(!ids.length && !eids.length && !sids.length && !rids.length){ toast("没有示例数据了"); return; }
   state.checkins.filter(function(c){ return ids.indexOf(c.goalId) >= 0; })
     .forEach(function(c){ pushCloud("checkins","delete",c); markTomb("checkins", c.id); });
   state.goals.filter(function(g){ return ids.indexOf(g.id) >= 0; })
@@ -3058,10 +3482,13 @@ function clearSeed(){
     .forEach(function(e){ pushCloud("events","delete",e); markTomb("events", e.id); });
   state.scripts.filter(function(s){ return sids.indexOf(s.id) >= 0; })
     .forEach(function(s){ pushCloud("scripts","delete",s); markTomb("scripts", s.id); });
+  state.reflections.filter(function(r){ return rids.indexOf(r.id) >= 0; })
+    .forEach(function(r){ pushCloud("reflections","delete",r); markTomb("reflections", r.id); });
   state.checkins = state.checkins.filter(function(c){ return ids.indexOf(c.goalId) < 0; });
   state.goals = state.goals.filter(function(g){ return ids.indexOf(g.id) < 0; });
   state.events = state.events.filter(function(e){ return eids.indexOf(e.id) < 0; });
   state.scripts = state.scripts.filter(function(s){ return sids.indexOf(s.id) < 0; });
+  state.reflections = state.reflections.filter(function(r){ return rids.indexOf(r.id) < 0; });
   afterCloud();
   toast("示例数据已清空","ok");
   refreshAll();
@@ -3075,8 +3502,11 @@ function wipeAll(){
   state.reviews.forEach(function(r){ pushCloud("reviews","delete",r); markTomb("reviews", r.weekStart); });
   state.events.forEach(function(e){ pushCloud("events","delete",e); markTomb("events", e.id); });
   state.scripts.forEach(function(s){ pushCloud("scripts","delete",s); markTomb("scripts", s.id); });
+  state.reflections.forEach(function(r){ pushCloud("reflections","delete",r); markTomb("reflections", r.id); });
   state.goals = []; state.checkins = []; state.reviews = []; state.events = []; state.scripts = [];
+  state.reflections = [];
   ui.scriptId = null; ui.scriptDirty = false;
+  ui.reflectId = null; ui.reflectDirty = false; ui.reflectKw = "";
   afterCloud();
   toast("全部数据已清空","ok");
   refreshAll();
@@ -3086,19 +3516,21 @@ function wipeAll(){
 function boot(){
   /* 支持 #board / #week / #me 直接进入对应页 */
   var hash = (location.hash || "").replace("#","");
-  if(["today","calendar","board","week","scripts","me"].indexOf(hash) >= 0) ui.tab = hash;
+  if(["today","calendar","board","week","scripts","reflect","me"].indexOf(hash) >= 0) ui.tab = hash;
 
   /* 1) 先渲染界面（本地缓存 / 示例数据），绝不白屏 */
   var local = loadLocal();
   if(local){
     state.goals = local.goals||[]; state.checkins = local.checkins||[];
     state.reviews = local.reviews||[]; state.events = local.events||[];
-    state.scripts = local.scripts||[]; state.tombs = local.tombs||{};
+    state.scripts = local.scripts||[]; state.reflections = local.reflections||[];
+    state.tombs = local.tombs||{};
   }
   else{
     var sd = seed();
     state.goals = sd.goals; state.checkins = sd.checkins;
     state.reviews = sd.reviews; state.events = sd.events; state.scripts = sd.scripts;
+    state.reflections = sd.reflections||[];
     saveLocal();
   }
   refreshAll();
@@ -3136,6 +3568,15 @@ function boot(){
     });
   });
 }
+
+/* 调试出口：仅供内部验证与排障，不影响页面行为 */
+try{
+  window.__LGUI__ = {
+    extractKeywords:extractKeywords, expiryWarnHTML:expiryWarnHTML,
+    refreshAll:refreshAll, state:state, ui:ui,
+    kwBoundaryOK:kwBoundaryOK
+  };
+}catch(e){}
 
 if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
 else boot();
