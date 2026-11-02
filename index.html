@@ -483,6 +483,7 @@ svg{display:block;flex:none}
 <canvas id="confetti" class="hide"></canvas>
 
 <script>
+/* ==== app.js ==== */
 /* =========================================================================
    学习目标管理台 · 数据层
    在线通道：WorkBuddy 资料库（__SMART_PAGE__.database）
@@ -1411,8 +1412,7 @@ global.LG = {
 
 })(window);
 
-</script>
-<script>
+/* ==== app2.js ==== */
 /* =========================================================================
    学习目标管理台 · 界面与算法层
    渲染函数之间严禁互调，统一由 refreshAll() 调度（防循环调用）
@@ -3226,6 +3226,22 @@ function renderMe(){
       '</div></div>';
   }
 
+  h += '<div class="card"><div class="row"><span class="ic">'+icon("save",18)+'</span>'+
+    '<div class="tx"><b>数据备份 / 搬家</b><span>导出一份 JSON，随时能搬回来</span></div></div>'+
+    '<div style="padding:0 14px 14px">'+
+    '<p class="mini muted" style="margin:0 0 10px">'+
+      '换浏览器、换网址、换手机时用得上：先<b>导出备份</b>存到电脑，再在新页面<b>导入备份</b>。'+
+      '导入是合并：同一条记录以最后修改的为准，不会把新内容冲掉。</p>'+
+    '<div class="inline-form">'+
+      '<button class="btn btn-sm btn-brand" data-act="export-data">'+icon("save",15)+'导出备份</button>'+
+      '<button class="btn btn-sm" data-act="import-data">导入备份</button>'+
+    '</div>'+
+    '<input id="importFile" type="file" accept=".json,application/json" style="display:none">'+
+    '<p class="mini muted" style="margin:10px 0 0">当前共 <b>'+state.goals.length+'</b> 个目标 · '+
+      '<b>'+state.checkins.length+'</b> 条打卡 · <b>'+state.events.length+'</b> 个活动 · '+
+      '<b>'+state.scripts.length+'</b> 篇文案 · <b>'+state.reflections.length+'</b> 则心得</p>'+
+    '</div></div>';
+
   h += '<div class="card"><div class="row"><span class="ic">'+icon("phone",18)+'</span>'+
     '<div class="tx"><b>添加到手机主屏幕</b><span>像 App 一样打开</span></div></div>'+
     '<div style="padding:0 14px 14px"><ol class="steps">'+
@@ -3274,6 +3290,104 @@ function flushScriptDraft(){
   var ti = document.getElementById("scriptTitle");
   if(!ta || !ti) return;
   commitScript(ta.value, ti.value, false);
+}
+
+/* ============================ 备份 / 导入 / 迁移 ============================
+   三种入口共用同一个 importEnv()：
+   1) 我的 → 导出备份 / 导入备份（文件）
+   2) 换域名、换设备时用 #mig=<base64> 链接一次性搬运
+   合并规则：按 id（周复盘按 weekStart）逐条取 updatedAt 较新的一条，只增改不删除。
+   ========================================================================= */
+var BAK_TABLES = ["goals","checkins","reviews","events","scripts","reflections"];
+
+function bakKeyOf(t, it){
+  if(t === "reviews") return String(it.weekStart || it.id || "");
+  return String(it.id || it.date || it.weekStart || "");
+}
+
+function exportData(){
+  var out = { app:"study-goal", v:1, exportedAt:new Date().toISOString() };
+  BAK_TABLES.forEach(function(t){ out[t] = state[t] || []; });
+  var txt = JSON.stringify(out, null, 2);
+  try{
+    var blob = new Blob([txt], {type:"application/json;charset=utf-8"});
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "学习目标备份-" + todayStr() + ".json";
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); if(a.parentNode) a.parentNode.removeChild(a); }, 1200);
+    toast("备份文件已导出","ok");
+  }catch(e){
+    toast("导出失败：" + (e && e.message || "浏览器不允许下载"),"err");
+  }
+}
+
+function importEnv(obj){
+  if(!obj || typeof obj !== "object") return 0;
+  var n = 0;
+  BAK_TABLES.forEach(function(t){
+    var inc = Array.isArray(obj[t]) ? obj[t] : [];
+    if(!Array.isArray(state[t])) state[t] = [];
+    inc.forEach(function(it){
+      if(!it || typeof it !== "object") return;
+      var k = bakKeyOf(t, it);
+      if(!k) return;
+      var idx = -1;
+      for(var i=0;i<state[t].length;i++){ if(bakKeyOf(t, state[t][i]) === k){ idx = i; break; } }
+      if(idx < 0){ state[t].push(it); n++; }
+      else if((it.updatedAt || 0) > (state[t][idx].updatedAt || 0)){ state[t][idx] = it; n++; }
+    });
+  });
+  if(obj.tombs && typeof obj.tombs === "object"){
+    if(!state.tombs) state.tombs = {};
+    Object.keys(obj.tombs).forEach(function(kk){
+      var v = obj.tombs[kk];
+      if(!state.tombs[kk] || v > state.tombs[kk]) state.tombs[kk] = v;
+    });
+  }
+  saveLocal();
+  return n;
+}
+
+function importFromHash(){
+  var h = location.hash || "";
+  if(h.indexOf("#mig=") !== 0) return 0;
+  var raw = h.slice(5);
+  var n = 0;
+  try{
+    var b64 = raw.replace(/-/g,"+").replace(/_/g,"/");
+    while(b64.length % 4) b64 += "=";
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+    var txt = new TextDecoder("utf-8").decode(bytes);
+    n = importEnv(JSON.parse(txt));
+  }catch(e){
+    n = 0;
+  }
+  try{ history.replaceState(null, "", location.pathname + location.search); }catch(e2){}
+  return n;
+}
+
+function pickImportFile(){
+  var fi = document.getElementById("importFile");
+  if(!fi){ toast("请刷新页面后再试","err"); return; }
+  fi.value = "";
+  fi.onchange = function(){
+    var f = fi.files && fi.files[0];
+    if(!f) return;
+    var fr = new FileReader();
+    fr.onload = function(){
+      var n = 0;
+      try{ n = importEnv(JSON.parse(String(fr.result))); }
+      catch(e){ toast("这个文件读不出来，请确认是导出时的 JSON 备份","err"); return; }
+      refreshAll();
+      toast(n ? ("导入完成，合并了 " + n + " 条记录") : "没有新内容，本机已是最新","ok");
+    };
+    fr.onerror = function(){ toast("读取文件失败","err"); };
+    fr.readAsText(f);
+  };
+  fi.click();
 }
 
 /* ------------------------------ 事件（统一委托） ------------------------------ */
@@ -3338,6 +3452,8 @@ document.addEventListener("click", function(e){
     case "report-gen": genReport(b.getAttribute("data-w")); break;
     case "report-copy": copyReport(); break;
     case "resync": doResync(); break;
+    case "export-data": exportData(); break;
+    case "import-data": pickImportFile(); break;
     case "sync-connect": {
       var inp = document.getElementById("syncToken");
       syncConnect(inp ? inp.value : "");
@@ -3533,7 +3649,10 @@ function boot(){
     state.reflections = sd.reflections||[];
     saveLocal();
   }
+  /* 换网址 / 换设备时用的一次性迁移链接：#mig=<base64>，合并后立刻清掉 hash */
+  var migrated = importFromHash();
   refreshAll();
+  if(migrated) toast("已导入 " + migrated + " 条记录","ok");
 
   /* 2) 多设备同步：先按本地缓存画出来，再后台拉云端 */
   Sync.onchange = function(){
@@ -3583,6 +3702,6 @@ else boot();
 
 })();
 
-</script>
+<\/script>
 </body>
 </html>
