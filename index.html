@@ -3305,6 +3305,14 @@ function bakKeyOf(t, it){
   return String(it.id || it.date || it.weekStart || "");
 }
 
+/* 判断一行是不是代码自动生成的示例（示例打卡用的是随机 id，所以打卡看 goalId） */
+function isSeedRow(t, row){
+  if(!row || typeof row !== "object") return false;
+  if(row.seed === true) return true;
+  if(t === "checkins") return String(row.goalId || "").indexOf("seed-") === 0;
+  return String(row.id || "").indexOf("seed-") === 0;
+}
+
 function exportData(){
   var out = { app:"study-goal", v:1, exportedAt:new Date().toISOString() };
   BAK_TABLES.forEach(function(t){ out[t] = state[t] || []; });
@@ -3322,12 +3330,22 @@ function exportData(){
   }
 }
 
-function importEnv(obj){
+function importEnv(obj, opts){
   if(!obj || typeof obj !== "object") return 0;
+  var clean = !!(opts && opts.cleanExamples);
   var n = 0;
   BAK_TABLES.forEach(function(t){
     var inc = Array.isArray(obj[t]) ? obj[t] : [];
     if(!Array.isArray(state[t])) state[t] = [];
+    /* 搬到新页面时，先清掉本机由代码自动生成、而这份数据里没有的示例行，
+       否则示例打卡会和真实打卡重复计数（只动 seed- 开头的行，不碰用户自己建的） */
+    if(clean){
+      var keep = {};
+      inc.forEach(function(it){ if(it && typeof it === "object") keep[bakKeyOf(t, it)] = 1; });
+      state[t] = state[t].filter(function(row){
+        return !(isSeedRow(t, row) && !keep[bakKeyOf(t, row || {})]);
+      });
+    }
     inc.forEach(function(it){
       if(!it || typeof it !== "object") return;
       var k = bakKeyOf(t, it);
@@ -3336,6 +3354,11 @@ function importEnv(obj){
       for(var i=0;i<state[t].length;i++){ if(bakKeyOf(t, state[t][i]) === k){ idx = i; break; } }
       if(idx < 0){ state[t].push(it); n++; }
       else if((it.updatedAt || 0) > (state[t][idx].updatedAt || 0)){ state[t][idx] = it; n++; }
+      else if(String(state[t][idx].id || "").indexOf("seed-") === 0){
+        /* 本机这条还是代码自带的示例（刚装好、没动过）：用搬过来的版本覆盖，
+           否则示例被改名后的内容会被本地新生成的示例挤掉 */
+        state[t][idx] = it; n++;
+      }
     });
   });
   if(obj.tombs && typeof obj.tombs === "object"){
@@ -3361,7 +3384,7 @@ function importFromHash(){
     var bytes = new Uint8Array(bin.length);
     for(var i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
     var txt = new TextDecoder("utf-8").decode(bytes);
-    n = importEnv(JSON.parse(txt));
+    n = importEnv(JSON.parse(txt), { cleanExamples:true });
   }catch(e){
     n = 0;
   }
@@ -3702,6 +3725,6 @@ else boot();
 
 })();
 
-<\/script>
+</script>
 </body>
 </html>
