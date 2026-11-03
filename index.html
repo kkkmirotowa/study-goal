@@ -3372,24 +3372,40 @@ function importEnv(obj, opts){
   return n;
 }
 
+function b64ToBytes(raw){
+  var b64 = String(raw).replace(/-/g,"+").replace(/_/g,"/");
+  while(b64.length % 4) b64 += "=";
+  var bin = atob(b64);
+  var bytes = new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function clearMigHash(){
+  try{ history.replaceState(null, "", location.pathname + location.search); }catch(e){}
+}
+
+/* 返回 Promise<number>：>0 表示合并了几条；0 表示没有可导入内容；-1 表示浏览器不支持解压 */
 function importFromHash(){
   var h = location.hash || "";
-  if(h.indexOf("#mig=") !== 0) return 0;
-  var raw = h.slice(5);
-  var n = 0;
-  try{
-    var b64 = raw.replace(/-/g,"+").replace(/_/g,"/");
-    while(b64.length % 4) b64 += "=";
-    var bin = atob(b64);
-    var bytes = new Uint8Array(bin.length);
-    for(var i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
-    var txt = new TextDecoder("utf-8").decode(bytes);
-    n = importEnv(JSON.parse(txt), { cleanExamples:true });
-  }catch(e){
-    n = 0;
+  if(h.indexOf("#mig=") === 0){
+    var n = 0;
+    try{ n = importEnv(JSON.parse(new TextDecoder("utf-8").decode(b64ToBytes(h.slice(5)))), { cleanExamples:true }); }
+    catch(e){ n = 0; }
+    clearMigHash();
+    return Promise.resolve(n);
   }
-  try{ history.replaceState(null, "", location.pathname + location.search); }catch(e2){}
-  return n;
+  if(h.indexOf("#migz=") === 0){
+    var packed = h.slice(6);
+    if(typeof DecompressionStream === "undefined"){ clearMigHash(); return Promise.resolve(-1); }
+    var stream = new Blob([b64ToBytes(packed)]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Response(stream).text().then(function(txt){
+      var k = importEnv(JSON.parse(txt), { cleanExamples:true });
+      clearMigHash();
+      return k;
+    }).catch(function(){ clearMigHash(); return 0; });
+  }
+  return Promise.resolve(0);
 }
 
 function pickImportFile(){
@@ -3672,10 +3688,13 @@ function boot(){
     state.reflections = sd.reflections||[];
     saveLocal();
   }
-  /* 换网址 / 换设备时用的一次性迁移链接：#mig=<base64>，合并后立刻清掉 hash */
-  var migrated = importFromHash();
+  /* 换网址 / 换设备时用的一次性迁移链接：#migz=<gzip+base64> / #mig=<base64>，合并后立刻清掉 hash */
+  var mig = importFromHash();
   refreshAll();
-  if(migrated) toast("已导入 " + migrated + " 条记录","ok");
+  mig.then(function(n){
+    if(n > 0){ refreshAll(); toast("已导入 " + n + " 条记录","ok"); }
+    else if(n === -1){ toast("这个浏览器版本太旧，用 Chrome 打开再试","err"); }
+  });
 
   /* 2) 多设备同步：先按本地缓存画出来，再后台拉云端 */
   Sync.onchange = function(){
